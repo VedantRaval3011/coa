@@ -31,6 +31,7 @@ export default function HtmlFixer() {
     const [customAddress1, setCustomAddress1] = useState('');
     const [customAddress2, setCustomAddress2] = useState('');
     const [customProductName, setCustomProductName] = useState('');
+    const [customGenericName, setCustomGenericName] = useState('');
     const [addDisclaimer, setAddDisclaimer] = useState(true);
 
     const handleLogin = (e: React.FormEvent) => {
@@ -67,6 +68,7 @@ export default function HtmlFixer() {
             setCustomAddress1(defaults.address1);
             setCustomAddress2(defaults.address2);
             setCustomProductName(defaults.productName);
+            setCustomGenericName(defaults.genericName || '');
         } catch (error) {
             console.error("Failed to read file", error);
         }
@@ -118,8 +120,10 @@ export default function HtmlFixer() {
             customAddress1: customAddress1.trim() || undefined,
             customAddress2: customAddress2.trim() || undefined,
             customProductName: customProductName.trim() || undefined,
+            customGenericName: customGenericName.trim() || undefined,
             addDisclaimer: addDisclaimer
         };
+
 
         const htmlToUse = previewType === 'fixed'
             ? fixHtmlDocument(originalHtml, options).fixedHtml
@@ -130,7 +134,7 @@ export default function HtmlFixer() {
         setPreviewUrl(url);
 
         return () => URL.revokeObjectURL(url);
-    }, [originalHtml, customAddress1, customAddress2, customProductName, addDisclaimer, previewType]);
+    }, [originalHtml, customAddress1, customAddress2, customProductName, customGenericName, addDisclaimer, previewType]);
 
     const processFiles = async () => {
         setIsProcessing(true);
@@ -141,6 +145,7 @@ export default function HtmlFixer() {
             customAddress1: customAddress1.trim() || undefined,
             customAddress2: customAddress2.trim() || undefined,
             customProductName: customProductName.trim() || undefined,
+            customGenericName: customGenericName.trim() || undefined,
             addDisclaimer: addDisclaimer
         };
 
@@ -215,6 +220,7 @@ export default function HtmlFixer() {
         setCustomAddress1('');
         setCustomAddress2('');
         setCustomProductName('');
+        setCustomGenericName('');
         setAddDisclaimer(true);
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
@@ -395,6 +401,19 @@ export default function HtmlFixer() {
                                         />
                                     </div>
 
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                                            Generic Name
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={customGenericName}
+                                            onChange={(e) => setCustomGenericName(e.target.value)}
+                                            placeholder="Extracted automatically from file..."
+                                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all"
+                                        />
+                                    </div>
+
                                     <div className="pt-2">
                                         <label className="flex items-center gap-3 cursor-pointer group">
                                             <div className="relative">
@@ -545,6 +564,7 @@ export default function HtmlFixer() {
                                                     customAddress1: customAddress1.trim() || undefined,
                                                     customAddress2: customAddress2.trim() || undefined,
                                                     customProductName: customProductName.trim() || undefined,
+                                                    customGenericName: customGenericName.trim() || undefined,
                                                     addDisclaimer: addDisclaimer
                                                 };
                                                 const result = fixHtmlDocument(originalHtml || '', options);

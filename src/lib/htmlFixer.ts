@@ -15,6 +15,7 @@
     customAddress1?: string;  // First address line (PLOT NO. ...)
     customAddress2?: string;  // Second address line (REG.OFF.: ...)
     customProductName?: string;  // Product name replacement
+    customGenericName?: string;  // Generic name replacement
     addDisclaimer?: boolean;  // Whether to add disclaimer after signature statement
   }
 
@@ -158,11 +159,18 @@
     const logoHtml = `<img src="${logoSrc}" style="position:absolute;top:3pt;left:14pt;width:45pt;height:auto;z-index:1000;" alt="Logo" />`;
 
     // 1. Replace the standard logo span container
-    const pattern = /<span\s+style=["'][^"']*position:\s*absolute[^"']*top:\s*[\d.]+pt[^"']*left:\s*[\d.]+pt[^"']*width:\s*[\d.]+pt[^"']*height:\s*[\d.]+pt[^"']*["']\s*>\s*<img[^>]*>\s*<\/span>/gi;
+    // Capture the top position to preserve page location
+    const pattern = /<span\s+style=["'][^"']*position:\s*absolute[^"']*top:\s*([\d.]+)pt[^"']*left:\s*[\d.]+pt[^"']*width:\s*[\d.]+pt[^"']*height:\s*[\d.]+pt[^"']*["']\s*>\s*<img[^>]*>\s*<\/span>/gi;
     
-    html = html.replace(pattern, () => {
+    html = html.replace(pattern, (match, topStr) => {
       count++;
-      return logoHtml;
+      const currentTop = parseFloat(topStr);
+      // If it's the first page (small top value), normalize to 3pt
+      // If it's a subsequent page (large top value), keep the original position to avoid moving it to page 1
+      // We assume anything > 200pt is not the main header logo of page 1
+      const newTop = currentTop < 200 ? 3 : currentTop;
+      
+      return `<img src="${logoSrc}" style="position:absolute;top:${newTop}pt;left:14pt;width:45pt;height:auto;z-index:1000;" alt="Logo" />`;
     });
 
     // 2. Replace standalone/broken logo images, but preserve our new one
@@ -171,7 +179,7 @@
       /<img[^>]*(?:FGANLCERTQAd|logo)[^>]*>/gi,
       (match) => {
         // If it's the one we just added (check for src and unique style part), keep it
-        if (match.includes(logoSrc) && match.includes('width:55pt')) {
+        if (match.includes(logoSrc) && match.includes('width:45pt')) {
             return match;
         }
         count++;
@@ -389,22 +397,35 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
     
     let modified = html;
     let count = 0;
+    // Store the original product name found on Page 1 to identify it on subsequent pages
+    let originalName: string | null = null;
     
-    // Match product name pattern ONLY at the Product Name row
-    // The Product Name label is at top:145pt and its value is at top:146pt
-    // We specifically target spans at top:144-148pt to avoid matching other fields like:
-    // - Packing (top:158pt)
-    // - Product Code (top:195pt)
-    // - Batch No. (top:207pt)
-    // - Actual Batch Size (top:219pt)
-    // - Packing Batch Size (top:232pt)
-    // - Sample Size (top:245pt)
-    // - Released Qty (top:257pt)
-    const pattern = /(<span style="position:absolute;top:14[4-8]pt;left:108pt" id=f2>)[^<]+(  <\/span>|<\/span>)/gi;
+    // Match product name pattern across ALL pages
+    // We specifically target spans at left:108pt (Product Name column) and id=f2
+    // We capture top position to identify Page 1 (144-150pt)
+    const pattern = /(<span style="position:absolute;top:([\d.]+)pt;left:108pt" id=f2>)([^<]+)(  <\/span>|<\/span>)/gi;
     
-    modified = modified.replace(pattern, (match, prefix, suffix) => {
-      count++;
-      return `${prefix}${productName}${suffix}`;
+    modified = modified.replace(pattern, (match, prefix, topStr, currentText, suffix) => {
+      const top = parseFloat(topStr);
+      const text = currentText.trim();
+      
+      // Page 1 Product Name is always at approx 145-146pt
+      const isPage1 = top >= 144 && top < 155;
+      
+      if (isPage1) {
+        originalName = text;
+        count++;
+        return `${prefix}${productName}${suffix}`;
+      }
+      
+      // For subsequent pages, replace if the text matches the original product name
+      // This ensures we don't accidentally replace other fields like "Packing" or "Batch No"
+      if (originalName && text === originalName) {
+        count++;
+        return `${prefix}${productName}${suffix}`;
+      }
+      
+      return match;
     });
     
     return { html: modified, applied: count > 0, count };
@@ -432,6 +453,81 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
   }
 
   /**
+   * Fix 13: Remove stray artifacts on the far left
+   * Removes elements positioned at left < 10pt which are usually printing artifacts
+   */
+  function removeLeftArtifacts(html: string): { html: string; applied: boolean; count: number } {
+    let modified = html;
+    let count = 0;
+
+    // Pattern for any absolute element with left less than 10pt
+    // Matches style="... left: Xpt" or "left:Xpt" where X is < 10 (single digit)
+    // Uses [\s\S]*? to match content across newlines (critical for divs containing nested elements like <hr>)
+    const pattern = /<(div|span)[^>]*style=["'][^"']*left:\s*[0-9](\.\d+)?pt[^"']*["'][^>]*>[\s\S]*?<\/\1>/gi;
+
+    modified = modified.replace(pattern, (match) => {
+      count++;
+      return ''; 
+    });
+
+    return { html: modified, applied: count > 0, count };
+  }
+
+  /**
+   * Fix 10b: Replace Generic Name
+   * Similar to Product Name, finds the Generic Name field and updates it across all pages
+   */
+  function replaceGenericName(html: string, genericName?: string): { html: string; applied: boolean; count: number } {
+    if (!genericName) return { html, applied: false, count: 0 };
+    
+    let modified = html;
+    let count = 0;
+    
+    // 1. Find the "Generic Name" label to determine the Top position
+    const labelMatch = modified.match(/<span[^>]*top:([\d.]+)pt[^>]*>\s*Generic\s*Name\s*<\/span>/i);
+    if (!labelMatch) {
+        return { html, applied: false, count: 0 };
+    }
+    
+    const labelTop = parseFloat(labelMatch[1]);
+    let originalValue = '';
+
+    // 2. Identify the original generic name value on Page 1
+    // Scan for all spans at left:108pt using a flexible regex for attributes
+    // Matches standard Oracle Reports format: style="..." ... >
+    const potentialValues = Array.from(modified.matchAll(/<span style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi));
+    
+    for (const match of potentialValues) {
+        const valTop = parseFloat(match[1]);
+        // Check vertical alignment (within 5pt tolerance)
+        if (Math.abs(valTop - labelTop) <= 5) {
+            originalValue = match[2].trim();
+            break;
+        }
+    }
+    
+    if (!originalValue) return { html, applied: false, count: 0 };
+
+    // 3. Replace all instances of that original value in the Generic Name column (left:108pt)
+    // Relaxed pattern: matches left:108pt and captures the rest of the tag until >
+    // We handle the closing tag flexibly too
+    const pattern = /(<span style="position:absolute;top:[\d.]+pt;left:108pt"[^>]*>)([^<]+)(<\/span>)/gi;
+
+    modified = modified.replace(pattern, (match, openTag, text, closeTag) => {
+        const trimmedText = text.trim();
+        // Replace if it matches the original Generic Name found on Page 1
+        // We also check if it contains the original value (in case of trailing spaces inside the match)
+        if (trimmedText === originalValue) {
+            count++;
+            return `${openTag}${genericName}${closeTag}`;
+        }
+        return match;
+    });
+
+    return { html: modified, applied: count > 0, count };
+  }
+
+  /**
    * Extract current values from the HTML to populate default customization options
    */
   export function extractCurrentValues(html: string) {
@@ -448,7 +544,29 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
     const productNameMatch = html.match(/<span style="position:absolute;top:14[4-8]pt;left:108pt"[^>]*>([^<]+)/i);
     const productName = productNameMatch ? productNameMatch[1].trim() : '';
 
-    return { address1, address2, productName };
+    // Extract Generic Name component
+    // 1. Find the label position
+    let genericName = '';
+    const genericNameLabelMatch = html.match(/<span[^>]*top:([\d.]+)pt[^>]*>\s*Generic\s*Name\s*<\/span>/i);
+    
+    if (genericNameLabelMatch) {
+        const labelTop = parseFloat(genericNameLabelMatch[1]);
+        
+        // 2. Find closest value at left:108pt
+        // We scan for all spans at left:108pt and find the one closest vertically to the label
+        const potentialValues = html.matchAll(/<span style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi);
+        
+        for (const match of potentialValues) {
+            const valTop = parseFloat(match[1]);
+            // Check vertical alignment (within 5pt tolerance to account for different fonts/alignments)
+            if (Math.abs(valTop - labelTop) <= 5) {
+                genericName = match[2].trim();
+                break;
+            }
+        }
+    }
+
+    return { address1, address2, productName, genericName };
   }
 
   /**
@@ -521,6 +639,13 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
         currentHtml = fix11.html;
         if (fix11.applied) appliedFixes.push(`Replaced product name(s) [${fix11.count} instance(s)]`);
       }
+
+      // Apply Fix 11b: Custom generic name replacement (if provided)
+      if (options?.customGenericName) {
+        const fix11b = replaceGenericName(currentHtml, options.customGenericName);
+        currentHtml = fix11b.html;
+        if (fix11b.applied) appliedFixes.push(`Replaced generic name(s) [${fix11b.count} instance(s)]`);
+      }
       
       // Apply Fix 12: Add disclaimer (if enabled)
       if (options?.addDisclaimer) {
@@ -528,6 +653,11 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
         currentHtml = fix12.html;
         if (fix12.applied) appliedFixes.push(`Added user requirement disclaimer [${fix12.count} instance(s)]`);
       }
+      
+      // Apply Fix 13: Remove left artifacts (stray dashes)
+      const fix13 = removeLeftArtifacts(currentHtml);
+      currentHtml = fix13.html;
+      if (fix13.applied) appliedFixes.push(`Removed left margin artifacts [${fix13.count} instance(s)]`);
       
       return {
         success: true,
