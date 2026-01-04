@@ -16,6 +16,7 @@
     customAddress2?: string;  // Second address line (REG.OFF.: ...)
     customProductName?: string;  // Product name replacement
     customGenericName?: string;  // Generic name replacement
+    customRemarks?: string;      // Remarks replacement
     addDisclaimer?: boolean;  // Whether to add disclaimer after signature statement
   }
 
@@ -85,19 +86,24 @@
     let modified = html;
     let count = 0;
     
-    // Offset to move footer below the border (26pt is enough to move it outside)
-    const FOOTER_OFFSET = 26;
+    // Target position for footer elements relative to page start
+    // We aim for 665pt because:
+    // 1. Main border ends at 620pt, so 665pt is comfortably below it
+    // 2. Page 2+ gets a +100pt offset. 665 + 100 = 765pt.
+    // 3. Printable page height is ~792pt. 765pt < 792pt, so it fits on the page.
+    // Ideally this prevents the footer from being pushed to a new empty page (Page 3)
+    const TARGET_FOOTER_POS = 665;
     
     // Pattern for footer elements with id=f13 (unquoted) at any position ending in 7xx or higher per page
     const footerPattern1 = /(<span style="position:absolute;top:)(\d+)(pt;left:\d+pt" id=f13>)/gi;
     modified = modified.replace(footerPattern1, (match, prefix, top, suffix) => {
       const currentPos = parseInt(top, 10);
-      // Only modify if position is likely a footer (ends in 7xx range relative to page)
-      // Check if the last 3 digits are > 700 (footer area per page)
       const posInPage = currentPos % 812;
       if (posInPage > 700 && posInPage < 770) {
         count++;
-        const newPos = currentPos + FOOTER_OFFSET;
+        // Calculate page start and set to fixed target position
+        const pageStart = currentPos - posInPage;
+        const newPos = pageStart + TARGET_FOOTER_POS;
         return `${prefix}${newPos}${suffix}`;
       }
       return match;
@@ -110,7 +116,8 @@
       const posInPage = currentPos % 812;
       if (posInPage > 700 && posInPage < 770) {
         count++;
-        const newPos = currentPos + FOOTER_OFFSET;
+        const pageStart = currentPos - posInPage;
+        const newPos = pageStart + TARGET_FOOTER_POS;
         return `${prefix}${newPos}${suffix}`;
       }
       return match;
@@ -123,7 +130,8 @@
       const posInPage = currentPos % 812;
       if (posInPage > 700 && posInPage < 770) {
         count++;
-        const newPos = currentPos + FOOTER_OFFSET;
+        const pageStart = currentPos - posInPage;
+        const newPos = pageStart + TARGET_FOOTER_POS;
         return `${prefix}${newPos}${suffix}`;
       }
       return match;
@@ -136,7 +144,8 @@
       const posInPage = currentPos % 812;
       if (posInPage > 700 && posInPage < 770) {
         count++;
-        const newPos = currentPos + FOOTER_OFFSET;
+        const pageStart = currentPos - posInPage;
+        const newPos = pageStart + TARGET_FOOTER_POS;
         return `${prefix}${newPos}${suffix}`;
       }
       return match;
@@ -528,6 +537,104 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
   }
 
   /**
+ * Fix 14: Replace/Add Remarks
+ * Finds the Remarks label and updates the content on ALL pages
+ * Improved to handle multi-page documents more reliably
+ */
+function replaceRemarks(html: string, remarks?: string): { html: string; applied: boolean; count: number } {
+  if (remarks === undefined) return { html, applied: false, count: 0 };
+  
+  let modified = html;
+  let count = 0;
+  
+  // Find ALL "Remarks" labels across all pages
+  const labelMatches = Array.from(modified.matchAll(/<span[^>]*style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"[^>]*id=([^>]*)>([^<]*Remarks[^<]*)<\/span>/gi));
+  
+  if (labelMatches.length === 0) {
+      // Try without id attribute
+      const labelMatchesNoId = Array.from(modified.matchAll(/<span[^>]*style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"[^>]*>([^<]*Remarks[^<]*)<\/span>/gi));
+      if (labelMatchesNoId.length === 0) {
+          return { html, applied: false, count: 0 };
+      }
+      
+      // Process each Remarks label found
+      for (const labelMatch of labelMatchesNoId) {
+          const labelTop = parseFloat(labelMatch[1]);
+          const labelLeft = parseFloat(labelMatch[2]);
+          
+          // Find the value span for this specific Remarks label
+          // It should be on the same line (similar top value) but to the right
+          const valueSpanPattern = /<span style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"([^>]*)>([^<]*)<\/span>/gi;
+          let valueSpanFound = false;
+          
+          modified = modified.replace(valueSpanPattern, (match, topStr, leftStr, attrs, content) => {
+              const top = parseFloat(topStr);
+              const left = parseFloat(leftStr);
+              
+              // Check if this span is on the same line as the Remarks label and to the right
+              if (Math.abs(top - labelTop) <= 2 && left > labelLeft + 20 && content.trim() !== ':') {
+                  // This is likely the value span for this Remarks label
+                  if (!valueSpanFound) {
+                      valueSpanFound = true;
+                      count++;
+                      return `<span style="position:absolute;top:${topStr}pt;left:${leftStr}pt"${attrs}>${remarks}</span>`;
+                  }
+              }
+              
+              return match;
+          });
+      }
+      
+      return { html: modified, applied: count > 0, count };
+  }
+  
+  // Process each Remarks label found (with id attribute)
+  for (const labelMatch of labelMatches) {
+      const labelTop = parseFloat(labelMatch[1]);
+      const labelLeft = parseFloat(labelMatch[2]);
+      
+      // Find the colon span first (it's between the label and the value)
+      let colonLeft = 0;
+      const colonPattern = /<span style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"[^>]*>:<\/span>/gi;
+      const colonMatches = Array.from(modified.matchAll(colonPattern));
+      
+      for (const colonMatch of colonMatches) {
+          const colonTop = parseFloat(colonMatch[1]);
+          const colonLeftPos = parseFloat(colonMatch[2]);
+          
+          if (Math.abs(colonTop - labelTop) <= 2 && colonLeftPos > labelLeft) {
+              colonLeft = colonLeftPos;
+              break;
+          }
+      }
+      
+      // Find the value span for this specific Remarks label
+      // It should be on the same line (similar top value) but to the right of the colon
+      const valueSpanPattern = /<span style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"([^>]*)>([^<]*)<\/span>/gi;
+      let valueSpanFound = false;
+      
+      modified = modified.replace(valueSpanPattern, (match, topStr, leftStr, attrs, content) => {
+          const top = parseFloat(topStr);
+          const left = parseFloat(leftStr);
+          
+          // Check if this span is on the same line as the Remarks label and to the right of the colon
+          const minLeft = colonLeft > 0 ? colonLeft : labelLeft + 20;
+          
+          if (Math.abs(top - labelTop) <= 2 && left > minLeft && content.trim() !== ':' && !valueSpanFound) {
+              // This is likely the value span for this Remarks label
+              valueSpanFound = true;
+              count++;
+              return `<span style="position:absolute;top:${topStr}pt;left:${leftStr}pt"${attrs}>${remarks}</span>`;
+          }
+          
+          return match;
+      });
+  }
+  
+  return { html: modified, applied: count > 0, count };
+}
+
+  /**
    * Extract current values from the HTML to populate default customization options
    */
   export function extractCurrentValues(html: string) {
@@ -566,7 +673,63 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
         }
     }
 
-    return { address1, address2, productName, genericName };
+    // Extract Remarks
+    let remarks = '';
+    
+    // Strategy: Find "Remarks" keyword, then find value at right
+    // 1. Find matches for "Remarks" in a span
+    const remarksLabelMatch = html.match(/(<span[^>]*top:([\d.]+)pt;left:([\d.]+)pt[^>]*>)([^<]*Remarks[^<]*)(<\/span>)/i);
+    
+    if (remarksLabelMatch) {
+        const labelTop = parseFloat(remarksLabelMatch[2]);
+        const labelLeft = parseFloat(remarksLabelMatch[3]);
+        const innerText = remarksLabelMatch[4];
+        
+        // Check if value is already in this span (e.g. "Remarks : Value")
+        // Remove "Remarks" and ":" and whitespace
+        const possibleValue = innerText.replace(/Remarks/i, '').replace(/:/g, '').trim();
+        
+        if (possibleValue.length > 0) {
+            remarks = possibleValue;
+        } else {
+            // Value is in a separate span
+            // Find spans on same line, to the right
+            const potentialValues = Array.from(html.matchAll(/<span style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"[^>]*>([^<]*)<\/span>/gi));
+            
+            let bestCandidate = '';
+            let minDist = 9999;
+            
+            for (const match of potentialValues) {
+                const valTop = parseFloat(match[1]);
+                const valLeft = parseFloat(match[2]);
+                const content = match[3].trim();
+                
+                // Same line (approx), to the right of label
+                if (Math.abs(valTop - labelTop) <= 5 && valLeft > labelLeft) {
+                    // Ignore the colon span if it exists separately
+                    if (content === ':' || content === '') {
+                         // If it's a colon, skip
+                         // If it's empty, it MIGHT be the value placeholder, keep it as candidate if we don't find text
+                    }
+                    
+                    // We prefer spans with text
+                    // The value span is usually the one with id=f2 (data) vs f4 (headers), but we can't search by ID easily without parsing attributes accurately
+                    // Heuristic: The value is strictly to the right of the colon. Colon is usually at +40pt from Remarks.
+                    // Remarks @ 16pt. Colon @ 56pt. Value @ 63pt.
+                    
+                    if (content !== ':' && valLeft > labelLeft + 10) {
+                         // If we find text, take it
+                         if (content.length > 0) {
+                             remarks = content;
+                             break;
+                         }
+                    }
+                }
+            }
+        }
+    }
+
+    return { address1, address2, productName, genericName, remarks };
   }
 
   /**
@@ -616,15 +779,15 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
       currentHtml = fix7.html;
       if (fix7.applied) appliedFixes.push(`Added horizontal line below Analyst/QC section [${fix7.count} instance(s)]`);
       
-      // Apply Fix 8: Offset page 2+ content for proper print pagination
-      const fix8 = offsetSubsequentPages(currentHtml);
-      currentHtml = fix8.html;
-      if (fix8.applied) appliedFixes.push(`Offset page 2+ content for print pagination [${fix8.count} element(s)]`);
-      
-      // Apply Fix 9: Fix broken micro symbol (µ)
+      // Apply Fix 9: Fix broken micro symbol (µ) - must run before offset
       const fix9 = fixMicroSymbol(currentHtml);
       currentHtml = fix9.html;
       if (fix9.applied) appliedFixes.push(`Fixed micro symbol (µm) [${fix9.count} instance(s)]`);
+      
+      // ============================================================
+      // TEXT REPLACEMENT FIXES - Must run BEFORE page offset (Fix 8)
+      // These rely on consistent page positioning (812pt per page)
+      // ============================================================
       
       // Apply Fix 10: Custom address replacement (if provided)
       if (options?.customAddress1 || options?.customAddress2) {
@@ -646,6 +809,25 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
         currentHtml = fix11b.html;
         if (fix11b.applied) appliedFixes.push(`Replaced generic name(s) [${fix11b.count} instance(s)]`);
       }
+
+      // Apply Fix 11c: Custom remarks replacement (if provided)
+      // We process this even if empty string is passed, to allow clearing remarks if needed,
+      // but usually we check if it is defined.
+      if (options?.customRemarks !== undefined) {
+         const fix11c = replaceRemarks(currentHtml, options.customRemarks);
+         currentHtml = fix11c.html;
+         if (fix11c.applied) appliedFixes.push(`Updated remarks [${fix11c.count} instance(s)]`);
+      }
+      
+      // ============================================================
+      // END TEXT REPLACEMENT FIXES
+      // ============================================================
+      
+      // Apply Fix 8: Offset page 2+ content for proper print pagination
+      // MUST run AFTER text replacements since offset breaks page position math
+      const fix8 = offsetSubsequentPages(currentHtml);
+      currentHtml = fix8.html;
+      if (fix8.applied) appliedFixes.push(`Offset page 2+ content for print pagination [${fix8.count} element(s)]`);
       
       // Apply Fix 12: Add disclaimer (if enabled)
       if (options?.addDisclaimer) {
@@ -658,6 +840,7 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
       const fix13 = removeLeftArtifacts(currentHtml);
       currentHtml = fix13.html;
       if (fix13.applied) appliedFixes.push(`Removed left margin artifacts [${fix13.count} instance(s)]`);
+      
       
       return {
         success: true,

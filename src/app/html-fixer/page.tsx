@@ -2,6 +2,8 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import Link from 'next/link';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 import { fixHtmlDocument, getFixedFilename, FixResult, FixerOptions, extractCurrentValues } from '@/lib/htmlFixer';
 
 interface ProcessedFile {
@@ -27,11 +29,16 @@ export default function HtmlFixer() {
     const [selectedFileIndex, setSelectedFileIndex] = useState(0);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
+    // Modal state
+    const [showAuthModal, setShowAuthModal] = useState(false);
+    const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
+
     // Custom options state
     const [customAddress1, setCustomAddress1] = useState('');
     const [customAddress2, setCustomAddress2] = useState('');
     const [customProductName, setCustomProductName] = useState('');
     const [customGenericName, setCustomGenericName] = useState('');
+    const [customRemarks, setCustomRemarks] = useState('');
     const [addDisclaimer, setAddDisclaimer] = useState(true);
 
     const handleLogin = (e: React.FormEvent) => {
@@ -40,10 +47,31 @@ export default function HtmlFixer() {
 
         if (password === 'admin@coa') {
             setUserRole('admin');
+            setShowAuthModal(false);
+            if (pendingAction) {
+                const action = pendingAction;
+                setPendingAction(null);
+                action();
+            }
         } else if (password === 'emp@coa') {
             setUserRole('employee');
+            setShowAuthModal(false);
+            if (pendingAction) {
+                const action = pendingAction;
+                setPendingAction(null);
+                action();
+            }
         } else {
             setAuthError('Invalid credentials. Please try again.');
+        }
+    };
+
+    const checkAuthAndExecute = (action: () => void) => {
+        if (userRole) {
+            action();
+        } else {
+            setPendingAction(() => action);
+            setShowAuthModal(true);
         }
     };
 
@@ -69,6 +97,7 @@ export default function HtmlFixer() {
             setCustomAddress2(defaults.address2);
             setCustomProductName(defaults.productName);
             setCustomGenericName(defaults.genericName || '');
+            setCustomRemarks(defaults.remarks || '');
         } catch (error) {
             console.error("Failed to read file", error);
         }
@@ -121,6 +150,7 @@ export default function HtmlFixer() {
             customAddress2: customAddress2.trim() || undefined,
             customProductName: customProductName.trim() || undefined,
             customGenericName: customGenericName.trim() || undefined,
+            customRemarks: customRemarks,
             addDisclaimer: addDisclaimer
         };
 
@@ -134,7 +164,7 @@ export default function HtmlFixer() {
         setPreviewUrl(url);
 
         return () => URL.revokeObjectURL(url);
-    }, [originalHtml, customAddress1, customAddress2, customProductName, customGenericName, addDisclaimer, previewType]);
+    }, [originalHtml, customAddress1, customAddress2, customProductName, customGenericName, customRemarks, addDisclaimer, previewType]);
 
     const processFiles = async () => {
         setIsProcessing(true);
@@ -146,6 +176,7 @@ export default function HtmlFixer() {
             customAddress2: customAddress2.trim() || undefined,
             customProductName: customProductName.trim() || undefined,
             customGenericName: customGenericName.trim() || undefined,
+            customRemarks: customRemarks,
             addDisclaimer: addDisclaimer
         };
 
@@ -181,22 +212,131 @@ export default function HtmlFixer() {
     };
 
     const downloadFile = (processedFile: ProcessedFile) => {
-        if (!processedFile.fixedBlob) return;
+        checkAuthAndExecute(() => {
+            if (!processedFile.fixedBlob) return;
 
-        const url = URL.createObjectURL(processedFile.fixedBlob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = processedFile.fixedName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+            const url = URL.createObjectURL(processedFile.fixedBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = processedFile.fixedName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
     };
 
     const downloadAll = () => {
-        processedFiles.forEach(pf => {
-            if (pf.fixedBlob) {
-                downloadFile(pf);
+        checkAuthAndExecute(() => {
+            processedFiles.forEach(pf => {
+                if (pf.fixedBlob) {
+                    const url = URL.createObjectURL(pf.fixedBlob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = pf.fixedName;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }
+            });
+        });
+    };
+
+
+    const generatePdf = async (processedFile: ProcessedFile) => {
+        checkAuthAndExecute(async () => {
+            if (!processedFile.result.fixedHtml) return;
+
+            try {
+                // Create a temporary container to render the HTML
+                const container = document.createElement('div');
+                container.style.position = 'absolute';
+                container.style.left = '-9999px';
+                container.style.top = '0';
+                // Set width to approx A4 width in pixels (screen resolution) to ensure proper layout
+                // Oracle reports are usually fixed width around 750-800px
+                container.style.width = '794px'; 
+                
+                // Extract body content if present, to avoid nesting html/body tags
+                const htmlContent = processedFile.result.fixedHtml;
+                // Simple check to extract body innerHTML if possible, otherwise use full string (browser handles it mostly)
+                const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+                container.innerHTML = bodyMatch ? bodyMatch[1] : htmlContent;
+                
+                // Calculate required height based on absolute positioned elements
+                // Oracle reports use "top: XXXpt"
+                let maxHeightPt = 0;
+                const topMatches = htmlContent.matchAll(/top:\s*([\d.]+)pt/g);
+                for (const match of topMatches) {
+                    const val = parseFloat(match[1]);
+                    if (!isNaN(val) && val > maxHeightPt) {
+                        maxHeightPt = val;
+                    }
+                }
+                
+                // Convert pt to px (approx 1.33 px per pt) + padding
+                // We reduce padding to avoid creating an empty extra page due to slight overflow
+                const heightPx = Math.ceil(maxHeightPt * 1.33) + 40;
+                container.style.height = `${Math.max(heightPx, 1123)}px`; // Minimum A4 height (~1123px at 96dpi)
+                container.style.backgroundColor = 'white'; // Ensure background
+
+                document.body.appendChild(container);
+
+                // Use html2canvas to capture the container
+                const canvas = await html2canvas(container, {
+                    scale: 2, // Higher scale for better quality
+                    useCORS: true,
+                    logging: false,
+                    backgroundColor: '#ffffff',
+                    height: Math.max(heightPx, 1123),
+                    windowHeight: Math.max(heightPx, 1123),
+                });
+
+                document.body.removeChild(container);
+
+                if (canvas.width === 0 || canvas.height === 0) {
+                    console.error("Canvas has 0 dimensions");
+                    alert("Could not generate PDF: canvas is empty.");
+                    return;
+                }
+
+                // Convert to JPEG instead of PNG to avoid "wrong PNG signature" errors in some jsPDF versions
+                const imgData = canvas.toDataURL('image/jpeg', 0.95);
+                
+                const pdf = new jsPDF('p', 'mm', 'a4');
+                const pdfWidth = pdf.internal.pageSize.getWidth();
+                const pdfHeight = pdf.internal.pageSize.getHeight();
+                const imgWidth = pdfWidth;
+                const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+                if (!Number.isFinite(imgWidth) || !Number.isFinite(imgHeight)) {
+                    console.error("Invalid PDF dimensions", { imgWidth, imgHeight, cvW: canvas.width, cvH: canvas.height });
+                    alert("Failed to calculate PDF dimensions.");
+                    return;
+                }
+
+                let heightLeft = imgHeight;
+                let position = 0;
+
+                // Add first page
+                pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+                heightLeft -= pdfHeight;
+
+                // Add subsequent pages if content overflows
+                // We use a threshold (5mm) to avoid adding a new page for tiny amounts of whitespace height
+                while (heightLeft > 5) {
+                    position -= pdfHeight;
+                    pdf.addPage();
+                    pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+                    heightLeft -= pdfHeight;
+                }
+
+                const pdfName = processedFile.fixedName.replace(/\.(htm|html|txt)$/i, '.pdf');
+                pdf.save(pdfName);
+            } catch (error) {
+                console.error('PDF Generation failed', error);
+                alert('Failed to generate PDF. See console for details.');
             }
         });
     };
@@ -221,6 +361,7 @@ export default function HtmlFixer() {
         setCustomAddress2('');
         setCustomProductName('');
         setCustomGenericName('');
+        setCustomRemarks('');
         setAddDisclaimer(true);
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
@@ -230,55 +371,7 @@ export default function HtmlFixer() {
     const totalFixes = processedFiles.reduce((acc, pf) => acc + pf.result.appliedFixes.length, 0);
     const successCount = processedFiles.filter(pf => pf.result.success).length;
 
-    if (!userRole) {
-        return (
-            <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white flex items-center justify-center p-8">
-                <div className="max-w-md w-full bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-10 shadow-2xl">
-                    <div className="text-center mb-10">
-                        <div className="text-6xl mb-4 text-purple-400">🛡️</div>
-                        <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
-                            HTML Fixer Access
-                        </h1>
-                        <p className="text-gray-400 mt-2">Enter your credentials to continue</p>
-                    </div>
 
-                    <form onSubmit={handleLogin} className="space-y-6">
-                        <div>
-                            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
-                                Access Password
-                            </label>
-                            <input
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                placeholder="••••••••"
-                                className="w-full px-5 py-4 bg-white/5 border border-white/10 rounded-2xl text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all text-center text-xl tracking-[0.5em]"
-                                autoFocus
-                            />
-                        </div>
-
-                        {authError && (
-                            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm text-center">
-                                {authError}
-                            </div>
-                        )}
-
-                        <button
-                            type="submit"
-                            className="w-full py-4 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 rounded-2xl font-bold text-white shadow-lg transition-all hover:scale-[1.02] active:scale-95 shadow-purple-500/20"
-                        >
-                            Log In
-                        </button>
-                    </form>
-
-                    <div className="mt-8 text-center text-gray-500 text-xs flex flex-col gap-2">
-                        <p>Authorized Personnel Only</p>
-                        <Link href="/" className="text-purple-400 hover:underline">← Back to Main Website</Link>
-                    </div>
-                </div>
-            </div>
-        );
-    }
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-8">
@@ -292,7 +385,9 @@ export default function HtmlFixer() {
                             </h1>
                             <span className={`px-3 py-1 rounded-full text-[10px] uppercase tracking-tighter font-bold border ${userRole === 'admin'
                                 ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
-                                : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                                : userRole === 'employee'
+                                    ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                                    : 'hidden'
                                 }`}>
                                 {userRole} Access
                             </span>
@@ -302,12 +397,14 @@ export default function HtmlFixer() {
                         </p>
                     </div>
                     <div className="flex items-center gap-4">
-                        <button
-                            onClick={handleLogout}
-                            className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-lg transition-colors text-sm"
-                        >
-                            Logout
-                        </button>
+                        {userRole && (
+                            <button
+                                onClick={handleLogout}
+                                className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-lg transition-colors text-sm"
+                            >
+                                Logout
+                            </button>
+                        )}
                         <Link
                             href="/"
                             className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-sm"
@@ -414,6 +511,19 @@ export default function HtmlFixer() {
                                         />
                                     </div>
 
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                                            Remarks
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={customRemarks}
+                                            onChange={(e) => setCustomRemarks(e.target.value)}
+                                            placeholder="Add remarks..."
+                                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all"
+                                        />
+                                    </div>
+
                                     <div className="pt-2">
                                         <label className="flex items-center gap-3 cursor-pointer group">
                                             <div className="relative">
@@ -511,6 +621,7 @@ export default function HtmlFixer() {
                                                         >
                                                             ⬇️
                                                         </button>
+                                                       
                                                     </div>
                                                 </div>
                                             </div>
@@ -560,30 +671,61 @@ export default function HtmlFixer() {
                                         </div>
                                         <button
                                             onClick={() => {
-                                                const options: FixerOptions = {
-                                                    customAddress1: customAddress1.trim() || undefined,
-                                                    customAddress2: customAddress2.trim() || undefined,
-                                                    customProductName: customProductName.trim() || undefined,
-                                                    customGenericName: customGenericName.trim() || undefined,
-                                                    addDisclaimer: addDisclaimer
-                                                };
-                                                const result = fixHtmlDocument(originalHtml || '', options);
-                                                const blob = new Blob([result.fixedHtml], { type: 'text/html' });
-                                                const fileName = files[selectedFileIndex] ? getFixedFilename(files[selectedFileIndex].name) : 'fixed.html';
+                                                checkAuthAndExecute(() => {
+                                                    const options: FixerOptions = {
+                                                        customAddress1: customAddress1.trim() || undefined,
+                                                        customAddress2: customAddress2.trim() || undefined,
+                                                        customProductName: customProductName.trim() || undefined,
+                                                        customGenericName: customGenericName.trim() || undefined,
+                                                        customRemarks: customRemarks,
+                                                        addDisclaimer: addDisclaimer
+                                                    };
+                                                    const result = fixHtmlDocument(originalHtml || '', options);
+                                                    const blob = new Blob([result.fixedHtml], { type: 'text/html' });
+                                                    const fileName = files[selectedFileIndex] ? getFixedFilename(files[selectedFileIndex].name) : 'fixed.html';
 
-                                                const url = URL.createObjectURL(blob);
-                                                const a = document.createElement('a');
-                                                a.href = url;
-                                                a.download = fileName;
-                                                document.body.appendChild(a);
-                                                a.click();
-                                                document.body.removeChild(a);
-                                                URL.revokeObjectURL(url);
+                                                    const url = URL.createObjectURL(blob);
+                                                    const a = document.createElement('a');
+                                                    a.href = url;
+                                                    a.download = fileName;
+                                                    document.body.appendChild(a);
+                                                    a.click();
+                                                    document.body.removeChild(a);
+                                                    URL.revokeObjectURL(url);
+                                                });
                                             }}
                                             className="px-3 py-1 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg border border-green-500/20 text-xs font-bold transition-all flex items-center gap-1"
                                             title="Download Current Preview"
                                         >
-                                            <span className="text-sm">⬇️</span> Download
+                                            <span className="text-sm">⬇️</span> Download HTML
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                checkAuthAndExecute(() => {
+                                                    // Create a temporary processed file object for the current preview
+                                                    const options: FixerOptions = {
+                                                        customAddress1: customAddress1.trim() || undefined,
+                                                        customAddress2: customAddress2.trim() || undefined,
+                                                        customProductName: customProductName.trim() || undefined,
+                                                        customGenericName: customGenericName.trim() || undefined,
+                                                        customRemarks: customRemarks,
+                                                        addDisclaimer: addDisclaimer
+                                                    };
+                                                    const result = fixHtmlDocument(originalHtml || '', options);
+                                                    
+                                                    const pf: ProcessedFile = {
+                                                        originalName: files[selectedFileIndex]?.name || 'document.htm',
+                                                        fixedName: getFixedFilename(files[selectedFileIndex]?.name || 'document.htm'),
+                                                        result: result,
+                                                        fixedBlob: new Blob([result.fixedHtml], { type: 'text/html' })
+                                                    };
+                                                    generatePdf(pf);
+                                                });
+                                            }}
+                                            className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg border border-red-500/20 text-xs font-bold transition-all flex items-center gap-1"
+                                            title="Download PDF"
+                                        >
+                                            <span className="text-sm">📄</span> PDF
                                         </button>
                                     </div>
                                 </div>
@@ -605,6 +747,62 @@ export default function HtmlFixer() {
                     </div>
                 )}
             </div>
+            {/* Authentication Modal */}
+            {showAuthModal && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-white/10 rounded-3xl p-8 max-w-sm w-full shadow-2xl relative overflow-hidden">
+                        {/* Background effect */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-pink-500/10 pointer-events-none"></div>
+                        
+                        <div className="relative relative-z-10">
+                            <div className="text-center mb-6">
+                                <div className="text-4xl mb-3">🔒</div>
+                                <h3 className="text-xl font-bold text-white">Download Authorization</h3>
+                                <p className="text-gray-400 text-xs mt-1">Please enter password to download</p>
+                            </div>
+
+                            <form onSubmit={handleLogin} className="space-y-4">
+                                <div>
+                                    <input
+                                        type="password"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        placeholder="••••••••"
+                                        className="w-full px-4 py-3 bg-black/40 border border-white/10 rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all text-center text-lg tracking-widest"
+                                        autoFocus
+                                    />
+                                </div>
+
+                                {authError && (
+                                    <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs text-center">
+                                        {authError}
+                                    </div>
+                                )}
+
+                                <div className="flex gap-3 mt-6">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setShowAuthModal(false);
+                                            setPendingAction(null);
+                                            setAuthError('');
+                                        }}
+                                        className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-gray-400 rounded-xl transition-colors font-medium text-sm"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        className="flex-1 py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:scale-[1.02] text-white rounded-xl shadow-lg shadow-purple-500/20 transition-all font-bold text-sm"
+                                    >
+                                        Confirm
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
