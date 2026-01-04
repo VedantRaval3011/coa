@@ -22,17 +22,18 @@
 
   /**
    * Fix 1: Main border - reduce height and simplify styling
-   * Matches any page's main content border with height:812.0 and changes to height:620pt
+   * Matches main content border and reduces height so footer can be outside
    */
   function fixMainBorder(html: string): { html: string; applied: boolean; count: number } {
-    // Match any main border div with height:812.0 (across all pages)
-    // The top position varies per page, so we match flexibly
-    const pattern = /(<div style="position:absolute;top:[\d.]+pt;left:11\.3pt;\s*width:755\.2;height:)812\.0;padding-top:803\.0;font:0pt Arial;border-width:2\.1; border-style:solid;border-color:#000000;(">)/gi;
+    // Match any main border div with typical width 755.2
+    // We match flexible heights to be more robust (some might be 812.0, 580pt, etc.)
+    const pattern = /<div style="position:absolute;top:([\d.]+)pt;left:11\.3pt;[^>]*width:755\.2;height:[^>]+;[^>]*border-width:2\.1;[^>]*">/gi;
     
     let count = 0;
-    const modified = html.replace(pattern, (match, prefix, suffix) => {
+    const modified = html.replace(pattern, (match, top) => {
       count++;
-      return `${prefix}620pt;\nborder:2.1pt solid #000000;${suffix}`;
+      // Set a fixed height of 620pt which usually fits the COA content perfectly
+      return `<div style="position:absolute;top:${top}pt;left:11.3pt;width:755.2;height:620pt;border:2.1pt solid #000000;">`;
     });
     
     return { html: modified, applied: count > 0, count };
@@ -87,84 +88,44 @@
     let count = 0;
     
     // Target position for footer elements relative to page start
-    // The horizontal line is at 791pt within each page, so we place footer at 770pt
+    // The main border height is fixed to 620pt starting around 144pt, so it ends at 764pt.
+    // Setting footer to 780pt ensures it is "just outside" (below) the border.
     const TARGET_FOOTER_POS = 770;
-    const PAGE_BOUNDARY = 791; // Same as offsetSubsequentPages
-    const PAGE_OFFSET = 100; // Offset added by offsetSubsequentPages per page
+    const PAGE_HEIGHT = 812; // Standard Oracle Reports page height unit
+    const PAGE_BOUNDARY = 791; // Boundary where offset begins
+    const PAGE_OFFSET = 100; // Offset added per page after the first
     
-    // Pattern for footer elements with id=f13 (unquoted)
-    const footerPattern1 = /(<span style="position:absolute;top:)(\d+)(pt;left:\d+pt" id=f13>)/gi;
-    modified = modified.replace(footerPattern1, (match, prefix, top, suffix) => {
-      const currentPos = parseInt(top, 10);
-      
-      // Calculate which page (using same logic as offsetSubsequentPages)
-      const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / PAGE_BOUNDARY);
-      
-      // Calculate expected page start after offset has been applied
-      // Page 1: 0, Page 2: 791 + 100 = 891, Page 3: 1582 + 200 = 1782, etc.
-      const pageStart = pageNum === 0 ? 0 : (PAGE_BOUNDARY * pageNum) + (PAGE_OFFSET * pageNum);
-      const posInPage = currentPos - pageStart;
-      
-      // Check if this is a footer element (position in page is in footer range)
-      if (posInPage > 700 && posInPage < 850) {
-        count++;
-        // Set to target position for this page
-        const newPos = pageStart + TARGET_FOOTER_POS;
-        return `${prefix}${newPos}${suffix}`;
-      }
-      return match;
-    });
-    
-    // Pattern for footer with quoted id
-    const footerPattern2 = /(<span style="position:absolute;top:)(\d+)(pt;left:\d+pt" id="f13">)/gi;
-    modified = modified.replace(footerPattern2, (match, prefix, top, suffix) => {
-      const currentPos = parseInt(top, 10);
-      
-      const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / PAGE_BOUNDARY);
-      const pageStart = pageNum === 0 ? 0 : (PAGE_BOUNDARY * pageNum) + (PAGE_OFFSET * pageNum);
-      const posInPage = currentPos - pageStart;
-      
-      if (posInPage > 700 && posInPage < 850) {
-        count++;
-        const newPos = pageStart + TARGET_FOOTER_POS;
-        return `${prefix}${newPos}${suffix}`;
-      }
-      return match;
-    });
-    
-    // Pattern for page identifier (FGANLCERTQA etc.) - id=f2 at high positions
-    const footerPattern3 = /(<span style="position:absolute;top:)(\d+)(pt;left:520pt" id=f2>)/gi;
-    modified = modified.replace(footerPattern3, (match, prefix, top, suffix) => {
-      const currentPos = parseInt(top, 10);
-      
-      const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / PAGE_BOUNDARY);
-      const pageStart = pageNum === 0 ? 0 : (PAGE_BOUNDARY * pageNum) + (PAGE_OFFSET * pageNum);
-      const posInPage = currentPos - pageStart;
-      
-      if (posInPage > 700 && posInPage < 850) {
-        count++;
-        const newPos = pageStart + TARGET_FOOTER_POS;
-        return `${prefix}${newPos}${suffix}`;
-      }
-      return match;
-    });
-    
-    // Pattern for page identifier with quoted id
-    const footerPattern4 = /(<span style="position:absolute;top:)(\d+)(pt;left:520pt" id="f2">)/gi;
-    modified = modified.replace(footerPattern4, (match, prefix, top, suffix) => {
-      const currentPos = parseInt(top, 10);
-      
-      const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / PAGE_BOUNDARY);
-      const pageStart = pageNum === 0 ? 0 : (PAGE_BOUNDARY * pageNum) + (PAGE_OFFSET * pageNum);
-      const posInPage = currentPos - pageStart;
-      
-      if (posInPage > 700 && posInPage < 850) {
-        count++;
-        const newPos = pageStart + TARGET_FOOTER_POS;
-        return `${prefix}${newPos}${suffix}`;
-      }
-      return match;
-    });
+    // Pattern for footer elements with id=f13 (unquoted) or id="f13" (quoted)
+    // and also the page identifier id=f2 at high positions
+    const footerPatterns = [
+      /(<span style="position:absolute;top:)(\d+)(pt;left:\d+pt" id=f13>)/gi,
+      /(<span style="position:absolute;top:)(\d+)(pt;left:\d+pt" id="f13">)/gi,
+      /(<span style="position:absolute;top:)(\d+)(pt;left:520pt" id=f2>)/gi,
+      /(<span style="position:absolute;top:)(\d+)(pt;left:520pt" id="f2">)/gi
+    ];
+
+    for (const pattern of footerPatterns) {
+      modified = modified.replace(pattern, (match, prefix, top, suffix) => {
+        const currentPos = parseInt(top, 10);
+        
+        // Determine page number and page start after offset
+        const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / (PAGE_BOUNDARY + PAGE_OFFSET));
+        
+        // Page start after offset: Page 1=0, Page 2=812+100=912, Page 3=1624+200=1824, etc.
+        const pageStart = pageNum * (PAGE_HEIGHT + PAGE_OFFSET);
+        const posInPage = currentPos - pageStart;
+        
+        // Check if this appears to be a footer element
+        if (posInPage > 650 && posInPage < 880) {
+          count++;
+          // For page 2+, move it "a little up" (10pt higher) as requested
+          const targetPos = pageNum > 0 ? TARGET_FOOTER_POS - 10 : TARGET_FOOTER_POS;
+          const newPos = pageStart + targetPos;
+          return `${prefix}${newPos}${suffix}`;
+        }
+        return match;
+      });
+    }
     
     return { html: modified, applied: count > 0, count };
   }
