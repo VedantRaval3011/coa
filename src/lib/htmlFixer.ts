@@ -80,29 +80,35 @@
 
   /**
    * Fix 4: Fix footer position - move footer elements to appear below the main border
-   * Simply adds an offset to move footer elements down below the border
+   * Runs AFTER offsetSubsequentPages, so must account for the 100pt offset already applied
    */
   function fixFooterPosition(html: string): { html: string; applied: boolean; count: number } {
     let modified = html;
     let count = 0;
     
     // Target position for footer elements relative to page start
-    // We aim for 665pt because:
-    // 1. Main border ends at 620pt, so 665pt is comfortably below it
-    // 2. Page 2+ gets a +100pt offset. 665 + 100 = 765pt.
-    // 3. Printable page height is ~792pt. 765pt < 792pt, so it fits on the page.
-    // Ideally this prevents the footer from being pushed to a new empty page (Page 3)
-    const TARGET_FOOTER_POS = 665;
+    // The horizontal line is at 791pt within each page, so we place footer at 770pt
+    const TARGET_FOOTER_POS = 770;
+    const PAGE_BOUNDARY = 791; // Same as offsetSubsequentPages
+    const PAGE_OFFSET = 100; // Offset added by offsetSubsequentPages per page
     
-    // Pattern for footer elements with id=f13 (unquoted) at any position ending in 7xx or higher per page
+    // Pattern for footer elements with id=f13 (unquoted)
     const footerPattern1 = /(<span style="position:absolute;top:)(\d+)(pt;left:\d+pt" id=f13>)/gi;
     modified = modified.replace(footerPattern1, (match, prefix, top, suffix) => {
       const currentPos = parseInt(top, 10);
-      const posInPage = currentPos % 812;
-      if (posInPage > 700 && posInPage < 770) {
+      
+      // Calculate which page (using same logic as offsetSubsequentPages)
+      const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / PAGE_BOUNDARY);
+      
+      // Calculate expected page start after offset has been applied
+      // Page 1: 0, Page 2: 791 + 100 = 891, Page 3: 1582 + 200 = 1782, etc.
+      const pageStart = pageNum === 0 ? 0 : (PAGE_BOUNDARY * pageNum) + (PAGE_OFFSET * pageNum);
+      const posInPage = currentPos - pageStart;
+      
+      // Check if this is a footer element (position in page is in footer range)
+      if (posInPage > 700 && posInPage < 850) {
         count++;
-        // Calculate page start and set to fixed target position
-        const pageStart = currentPos - posInPage;
+        // Set to target position for this page
         const newPos = pageStart + TARGET_FOOTER_POS;
         return `${prefix}${newPos}${suffix}`;
       }
@@ -113,10 +119,13 @@
     const footerPattern2 = /(<span style="position:absolute;top:)(\d+)(pt;left:\d+pt" id="f13">)/gi;
     modified = modified.replace(footerPattern2, (match, prefix, top, suffix) => {
       const currentPos = parseInt(top, 10);
-      const posInPage = currentPos % 812;
-      if (posInPage > 700 && posInPage < 770) {
+      
+      const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / PAGE_BOUNDARY);
+      const pageStart = pageNum === 0 ? 0 : (PAGE_BOUNDARY * pageNum) + (PAGE_OFFSET * pageNum);
+      const posInPage = currentPos - pageStart;
+      
+      if (posInPage > 700 && posInPage < 850) {
         count++;
-        const pageStart = currentPos - posInPage;
         const newPos = pageStart + TARGET_FOOTER_POS;
         return `${prefix}${newPos}${suffix}`;
       }
@@ -127,10 +136,13 @@
     const footerPattern3 = /(<span style="position:absolute;top:)(\d+)(pt;left:520pt" id=f2>)/gi;
     modified = modified.replace(footerPattern3, (match, prefix, top, suffix) => {
       const currentPos = parseInt(top, 10);
-      const posInPage = currentPos % 812;
-      if (posInPage > 700 && posInPage < 770) {
+      
+      const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / PAGE_BOUNDARY);
+      const pageStart = pageNum === 0 ? 0 : (PAGE_BOUNDARY * pageNum) + (PAGE_OFFSET * pageNum);
+      const posInPage = currentPos - pageStart;
+      
+      if (posInPage > 700 && posInPage < 850) {
         count++;
-        const pageStart = currentPos - posInPage;
         const newPos = pageStart + TARGET_FOOTER_POS;
         return `${prefix}${newPos}${suffix}`;
       }
@@ -141,10 +153,13 @@
     const footerPattern4 = /(<span style="position:absolute;top:)(\d+)(pt;left:520pt" id="f2">)/gi;
     modified = modified.replace(footerPattern4, (match, prefix, top, suffix) => {
       const currentPos = parseInt(top, 10);
-      const posInPage = currentPos % 812;
-      if (posInPage > 700 && posInPage < 770) {
+      
+      const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / PAGE_BOUNDARY);
+      const pageStart = pageNum === 0 ? 0 : (PAGE_BOUNDARY * pageNum) + (PAGE_OFFSET * pageNum);
+      const posInPage = currentPos - pageStart;
+      
+      if (posInPage > 700 && posInPage < 850) {
         count++;
-        const pageStart = currentPos - posInPage;
         const newPos = pageStart + TARGET_FOOTER_POS;
         return `${prefix}${newPos}${suffix}`;
       }
@@ -758,11 +773,6 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
       currentHtml = fix3.html;
       if (fix3.applied) appliedFixes.push(`Fixed header border(s) (added border-bottom: none) [${fix3.count} instance(s)]`);
       
-      // Apply Fix 4: Footer position
-      const fix4 = fixFooterPosition(currentHtml);
-      currentHtml = fix4.html;
-      if (fix4.applied) appliedFixes.push(`Fixed footer position(s) (754pt → 780pt) [${fix4.count} instance(s)]`);
-      
       // Apply Fix 5: Logo Display
       const fix5 = fixLogo(currentHtml);
       currentHtml = fix5.html;
@@ -828,6 +838,11 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
       const fix8 = offsetSubsequentPages(currentHtml);
       currentHtml = fix8.html;
       if (fix8.applied) appliedFixes.push(`Offset page 2+ content for print pagination [${fix8.count} element(s)]`);
+      
+      // Apply Fix 4: Footer position - MUST run AFTER page offset to account for offset
+      const fix4 = fixFooterPosition(currentHtml);
+      currentHtml = fix4.html;
+      if (fix4.applied) appliedFixes.push(`Fixed footer position(s) [${fix4.count} instance(s)]`);
       
       // Apply Fix 12: Add disclaimer (if enabled)
       if (options?.addDisclaimer) {
