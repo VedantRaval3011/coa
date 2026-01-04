@@ -699,34 +699,7 @@ export default function HtmlFixer() {
                                         >
                                             <span className="text-sm">⬇️</span> Download HTML
                                         </button>
-                                        <button
-                                            onClick={() => {
-                                                checkAuthAndExecute(() => {
-                                                    // Create a temporary processed file object for the current preview
-                                                    const options: FixerOptions = {
-                                                        customAddress1: customAddress1.trim() || undefined,
-                                                        customAddress2: customAddress2.trim() || undefined,
-                                                        customProductName: customProductName.trim() || undefined,
-                                                        customGenericName: customGenericName.trim() || undefined,
-                                                        customRemarks: customRemarks,
-                                                        addDisclaimer: addDisclaimer
-                                                    };
-                                                    const result = fixHtmlDocument(originalHtml || '', options);
-                                                    
-                                                    const pf: ProcessedFile = {
-                                                        originalName: files[selectedFileIndex]?.name || 'document.htm',
-                                                        fixedName: getFixedFilename(files[selectedFileIndex]?.name || 'document.htm'),
-                                                        result: result,
-                                                        fixedBlob: new Blob([result.fixedHtml], { type: 'text/html' })
-                                                    };
-                                                    generatePdf(pf);
-                                                });
-                                            }}
-                                            className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg border border-red-500/20 text-xs font-bold transition-all flex items-center gap-1"
-                                            title="Download PDF"
-                                        >
-                                            <span className="text-sm">📄</span> PDF
-                                        </button>
+
                                     </div>
                                 </div>
                                 <div className="flex-1 bg-white relative">
