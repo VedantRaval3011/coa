@@ -90,10 +90,10 @@
     // Target position for footer elements relative to page start
     // The main border height is fixed to 620pt starting around 144pt, so it ends at 764pt.
     // Setting footer to 780pt ensures it is "just outside" (below) the border.
-    const TARGET_FOOTER_POS = 770;
-    const PAGE_HEIGHT = 812; // Standard Oracle Reports page height unit
+    const TARGET_FOOTER_POS = 780;
+    const PAGE_HEIGHT = 812; // Standardized to match PAGE_BOUNDARY
     const PAGE_BOUNDARY = 791; // Boundary where offset begins
-    const PAGE_OFFSET = 100; // Offset added per page after the first
+    const PAGE_OFFSET = 80; // Reduced from 100 to give more bottom margin
     
     // Pattern for footer elements with id=f13 (unquoted) or id="f13" (quoted)
     // and also the page identifier id=f2 at high positions
@@ -111,15 +111,15 @@
         // Determine page number and page start after offset
         const pageNum = currentPos < PAGE_BOUNDARY ? 0 : Math.floor(currentPos / (PAGE_BOUNDARY + PAGE_OFFSET));
         
-        // Page start after offset: Page 1=0, Page 2=812+100=912, Page 3=1624+200=1824, etc.
+        // Page start after offset: Page 1=0, Page 2=791+80=871, etc.
         const pageStart = pageNum * (PAGE_HEIGHT + PAGE_OFFSET);
         const posInPage = currentPos - pageStart;
         
         // Check if this appears to be a footer element
-        if (posInPage > 650 && posInPage < 880) {
+        if (posInPage > 600 && posInPage < 880) {
           count++;
-          // For page 2+, move it "a little up" (10pt higher) as requested
-          const targetPos = pageNum > 0 ? TARGET_FOOTER_POS - 10 : TARGET_FOOTER_POS;
+          // For page 2+, move it high enough to avoid triggering a 3rd page
+          const targetPos = pageNum > 0 ? TARGET_FOOTER_POS - 20 : TARGET_FOOTER_POS;
           const newPos = pageStart + targetPos;
           return `${prefix}${newPos}${suffix}`;
         }
@@ -236,8 +236,8 @@
     
     // Page boundary - content starting at or after this is page 2
     const PAGE_BOUNDARY = 791;
-    // Fixed offset to push page 2 content down so it lands on printed page 2
-    const PAGE_OFFSET = 100;
+    // Reduced from 100 to 80 to ensure 2nd page content doesn't hit the bottom edge (which triggers 3rd blank page)
+    const PAGE_OFFSET = 80;
     
     // Match position:absolute with top values
     const positionPattern = /(\bposition:\s*absolute\s*;\s*top:\s*)(\d+(?:\.\d+)?)(pt)/gi;
@@ -336,33 +336,30 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
   let count = 0;
   
   if (address1) {
-    // Find and replace the first address line (PLOT NO. ...) 
-    // Pattern matches: PLOT NO. followed by any characters (the full address)
-    const pattern1 = /<span style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"([^>]*)>\s*PLOT NO\.[^<]+<\/span>/gi;
+    // Robust pattern for Address Line 1 (PLOT NO. ...)
+    // Matches span with top/left/style in any order, flexible with spaces and quotes
+    const pattern1 = /<span[^>]*style=["'][^"']*top:\s*([\d.]+)pt;[^"']*left:\s*([\d.]+)pt;?[^"']*["'][^>]*>\s*PLOT\s*NO\.?\s*[^<]+<\/span>/gi;
     
-    modified = modified.replace(pattern1, (match, topPos, leftPos, attributes) => {
+    modified = modified.replace(pattern1, (match, topPos, leftPos) => {
       count++;
-      // Extract id attribute if present to preserve font styling
-      const idMatch = attributes.match(/id=["']?([^"'\s>]+)["']?/);
+      // Extract existing id if present to preserve styles
+      const idMatch = match.match(/id=["']?([^"'\s>]+)["']?/);
       const idAttr = idMatch ? ` id="${idMatch[1]}"` : '';
       
-      // Center the address: use full width of valid area (approx 755pt) and text-align center
-      // Aligned with header box which is at left:11.6pt
+      // Center the address
       return `<span style="position:absolute;top:${topPos}pt;left:11.6pt;width:580pt;text-align:center;"${idAttr}>${address1}</span>`;
     });
   }
   
   if (address2) {
-    // Find and replace the second address line (REG.OFF.: ...)
-    const pattern2 = /<span style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"([^>]*)>\s*REG\.OFF\.[^<]+<\/span>/gi;
+    // Robust pattern for Address Line 2 (REG.OFF.: ...)
+    const pattern2 = /<span[^>]*style=["'][^"']*top:\s*([\d.]+)pt;[^"']*left:\s*([\d.]+)pt;?[^"']*["'][^>]*>\s*REG\.?\s*OFF\.?\s*[^<]+<\/span>/gi;
     
-    modified = modified.replace(pattern2, (match, topPos, leftPos, attributes) => {
+    modified = modified.replace(pattern2, (match, topPos, leftPos) => {
       count++;
-      // Extract id attribute if present to preserve font styling
-      const idMatch = attributes.match(/id=["']?([^"'\s>]+)["']?/);
+      const idMatch = match.match(/id=["']?([^"'\s>]+)["']?/);
       const idAttr = idMatch ? ` id="${idMatch[1]}"` : '';
       
-      // Center the address
       return `<span style="position:absolute;top:${topPos}pt;left:11.6pt;width:580pt;text-align:center;"${idAttr}>${address2}</span>`;
     });
   }
@@ -611,16 +608,212 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
 }
 
   /**
+   * Fix 17: Remove horizontal line above Conclusion
+   * Removes the extra horizontal line that appears just above the "Conclusion" text
+   * This line typically appears around top:663pt and creates an unwanted double-line effect
+   */
+  function removeLineAboveConclusion(html: string): { html: string; applied: boolean; count: number } {
+    let count = 0;
+    let modified = html;
+    
+    // Find the Conclusion text position first
+    const conclusionMatch = modified.match(/\<div[^\>]*top:(\d+(?:\.\d+)?)pt[^\>]*\>Conclusion\s*:/i);
+    
+    if (conclusionMatch) {
+      const conclusionTop = parseFloat(conclusionMatch[1]);
+      
+      // Look for horizontal lines within 5pt above the conclusion (typically at 663pt when conclusion is at 666pt)
+      // Pattern matches the horizontal line divs with border-width:1.4 0 0 0
+      const linePattern = /\<div style="position:absolute;top:(\d+(?:\.\d+)?)pt;left:[\d.]+pt;width:[\d.]+;height:[\d.]+;padding-top:[\d.-]+;font:[\dpt ]+Arial;border-width:1\.4 0 0 0; border-style:solid;border-color:#000000;"\>\<table\>\<\/table\>\<\/div\>\r?\n?/gi;
+      
+      modified = modified.replace(linePattern, (match, topStr) => {
+        const lineTop = parseFloat(topStr);
+        
+        // Remove the line if it's within 5pt above the conclusion
+        if (lineTop < conclusionTop && conclusionTop - lineTop <= 5) {
+          count++;
+          return '';
+        }
+        
+        return match;
+      });
+    }
+    
+    return { html: modified, applied: count > 0, count };
+  }
+
+  /**
+   * Fix 18: Adjust Timestamp/Metadata Position
+   * Moves the section containing "FGANLCERTQA" slightly down
+   */
+  function fixTimestampPosition(html: string): { html: string; applied: boolean; count: number } {
+    let count = 0;
+    let modified = html;
+    
+    // Pattern 1: Look for spans containing the unique identifier FGANLCERTQA
+    const fganlPattern = /<span[^>]*style=["'][^"']*position:\s*absolute[^"']*top:\s*([\d.]+)pt;[^"']*left:\s*([\d.]+)pt;?[^"']*["'][^>]*>[^<]*FGANLCERTQA[^<]*<\/span>/gi;
+    
+    modified = modified.replace(fganlPattern, (match, topStr, leftStr) => {
+      count++;
+      const top = parseFloat(topStr);
+      const newTop = top; // Move down by 15pt
+      return match.replace(`top:${topStr}pt`, `top:${newTop}pt`);
+    });
+    
+    // Pattern 2: Look for timestamp at bottom left (id=f13 at low left positions like 14pt)
+    // Format: <span style="position:absolute;top:706pt;left:14pt" id=f13>LDABHI    25-12-25 06:49 PM</span>
+    // These appear at the bottom left of the page, inside the border
+    const timestampPatterns = [
+      /(<span style="position:absolute;top:)(\d+)(pt;left:1[0-9]pt" id=f13>)/gi,
+      /(<span style="position:absolute;top:)(\d+)(pt;left:1[0-9]pt" id="f13">)/gi
+    ];
+    
+    for (const pattern of timestampPatterns) {
+      modified = modified.replace(pattern, (match, prefix, topStr, suffix) => {
+        const top = parseInt(topStr, 10);
+        // Only move if in footer area (near bottom of page)
+        const PAGE_HEIGHT = 791;
+        const posInPage = top % PAGE_HEIGHT;
+        
+        // Check if at bottom of page (680-760pt range within page)
+        if (posInPage >= 680 && posInPage <= 760) {
+          count++;
+          const newTop = top + 15; // Move down by 15pt
+          return `${prefix}${newTop}${suffix}`;
+        }
+        return match;
+      });
+    }
+    
+    return { html: modified, applied: count > 0, count };
+  }
+
+  /**
+   * Fix 19: Add top margin by offsetting all content downward
+   * Adds 5pt of space at the top by moving all positioned elements down
+   * IMPORTANT: This must run BEFORE offsetSubsequentPages (Fix 8) to avoid double-offsetting
+   */
+  function addTopMargin(html: string): { html: string; applied: boolean; count: number } {
+    let count = 0;
+    let modified = html;
+    
+    const TOP_OFFSET = 5; // Add 5pt margin at the top
+    const PAGE_BOUNDARY = 791; // Page 1 ends at 791pt
+    
+    // Pattern: Match ALL position:absolute with top values
+    // We only offset page 1 content (top < PAGE_BOUNDARY) to avoid interfering with multi-page logic
+    const positionPattern = /(\bposition:\s*absolute\s*;\s*top:\s*)([\d.]+)(pt)/gi;
+    
+    modified = modified.replace(positionPattern, (match, prefix, topValue, suffix) => {
+      const currentTop = parseFloat(topValue);
+      
+      // Only add offset to page 1 content
+      // Page 2+ content will be handled by offsetSubsequentPages (Fix 8)
+      if (currentTop < PAGE_BOUNDARY) {
+        const newTop = currentTop + TOP_OFFSET;
+        count++;
+        return `${prefix}${newTop}${suffix}`;
+      }
+      
+      return match;
+    });
+    
+    return { html: modified, applied: count > 0, count };
+  }
+
+  /**
+   * Fix 15: Remove blank third page
+   * Removes empty elements, horizontal lines, or closing tags that are 
+   * positioned too far down (triggering a 3rd blank page)
+   */
+  function removeEmptyThirdPage(html: string): { html: string; applied: boolean; count: number } {
+    let modified = html;
+    let count = 0;
+    
+    // Boundary for 2nd page end (A4 is ~842pt, so 2 pages = 1684pt)
+    // We want to remove anything beyond the safe printable area (~1670pt)
+    const MAX_PAGE_2_END = 1670; 
+    
+    // Pattern for ANY absolute element with top values
+    const trailingPattern = /<(\w+)[^>]*style=["'][^"']*top:\s*(\d+(?:\.\d+)?)(?:pt|px)[^"']*["'][^>]*>([\s\S]*?)<\/\1>/gi;
+    
+    modified = modified.replace(trailingPattern, (match, tag, topVal, content) => {
+      const top = parseFloat(topVal);
+      
+      if (top > MAX_PAGE_2_END) {
+        // Special case: if it contains </body> or </html>, extract them and keep them but without the positioned container
+        if (content.toLowerCase().includes('</body>') || content.toLowerCase().includes('</html>')) {
+            count++;
+            const tags = content.match(/<\/(body|html)>/gi);
+            return tags ? tags.join('') : '';
+        }
+
+        const trimmedContent = content.trim();
+        // If it contains a horizontal line or is mostly empty, remove it
+        const isHorizontalLine = content.toLowerCase().includes('<hr') || content.toLowerCase().includes('border-width:1.4 0 0 0');
+        const isActuallyEmpty = trimmedContent.replace(/&nbsp;|\s|<br\s*\/?>/gi, '').length === 0;
+        
+        if (isActuallyEmpty || isHorizontalLine) {
+          count++;
+          return '';
+        }
+
+        // If it's something else but far beyond page 2, remove it anyway to prevent 3rd page
+        if (top > 1683) {
+            count++;
+            return '';
+        }
+      }
+      return match;
+    });
+    
+    // Also look for any standing body/html tags positioned at the end
+    modified = modified.replace(/<div[^>]*top:\s*(1[7-9]\d\d|2\d\d\d)[^>]*>[\s\S]*?<\/div>/gi, (match) => {
+        if (match.toLowerCase().includes('</body>') || match.toLowerCase().includes('</html>')) {
+            const tags = match.match(/<\/(body|html)>/gi);
+            count++;
+            return tags ? tags.join('') : '';
+        }
+        count++;
+        return '';
+    });
+    
+    return { html: modified, applied: count > 0, count };
+  }
+
+  /**
+   * Fix 16: Add global print styles
+   * Injects a style tag to control page margins and overflow for cleaner printing
+   */
+  function addGlobalPrintStyles(html: string): { html: string; applied: boolean; count: number } {
+    const styleTag = `
+<style>
+  @media print {
+    body { margin: 0; padding: 0; }
+    @page { margin: 0; size: auto; }
+    div[style*="position:absolute"] { page-break-inside: avoid; }
+  }
+</style>`;
+    
+    if (html.includes('</head>')) {
+      return { html: html.replace('</head>', styleTag + '\n</head>'), applied: true, count: 1 };
+    } else {
+      return { html: styleTag + html, applied: true, count: 1 };
+    }
+  }
+
+  /**
    * Extract current values from the HTML to populate default customization options
    */
   export function extractCurrentValues(html: string) {
     // Extract Address 1 - match PLOT NO with optional dot, colon, or spaces
-    const address1Match = html.match(/PLOT\s*NO\.?\s*[^<]+/i);
-    const address1 = address1Match ? address1Match[0].trim() : '';
+    // Specifically look for it within a span at the top of the document (page 1)
+    const address1Match = html.match(/<span[^>]*style=["'][^"']*top:\s*[1-5]\dpt;[^"']*left:\s*([\d.]+)pt;?[^"']*["'][^>]*>\s*(PLOT\s*NO\.?\s*[^<]+)<\/span>/i);
+    const address1 = address1Match ? address1Match[2].trim() : '';
 
     // Extract Address 2 - match REG. OFF with optional dots, colons, or spaces
-    const address2Match = html.match(/REG\.?\s*OFF\.?\s*:[^<]+|REG\.?\s*OFF\.?\s*[^<]+/i);
-    const address2 = address2Match ? address2Match[0].trim() : '';
+    const address2Match = html.match(/<span[^>]*style=["'][^"']*top:\s*[1-6]\dpt;[^"']*left:\s*([\d.]+)pt;?[^"']*["'][^>]*>\s*(REG\.?\s*OFF\.?\s*[^<]+)<\/span>/i);
+    const address2 = address2Match ? address2Match[2].trim() : '';
 
     // Extract Product Name - match the span at the specific vertical position
     // We try to match the content inside the span at top:14[4-8]pt
@@ -794,6 +987,12 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
       // END TEXT REPLACEMENT FIXES
       // ============================================================
       
+      // Apply Fix 19: Add top margin by offsetting page 1 content downward by 5pt
+      // MUST run BEFORE Fix 8 (offsetSubsequentPages) to avoid double-offsetting
+      const fix19 = addTopMargin(currentHtml);
+      currentHtml = fix19.html;
+      if (fix19.applied) appliedFixes.push(`Added 5pt top margin to page 1 [${fix19.count} element(s)]`);
+      
       // Apply Fix 8: Offset page 2+ content for proper print pagination
       // MUST run AFTER text replacements since offset breaks page position math
       const fix8 = offsetSubsequentPages(currentHtml);
@@ -816,6 +1015,21 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
       const fix13 = removeLeftArtifacts(currentHtml);
       currentHtml = fix13.html;
       if (fix13.applied) appliedFixes.push(`Removed left margin artifacts [${fix13.count} instance(s)]`);
+
+      // Apply Fix 17: Adjust timestamp/metadata position
+      const fix17 = fixTimestampPosition(currentHtml);
+      currentHtml = fix17.html;
+      if (fix17.applied) appliedFixes.push(`Moved timestamp/metadata section down [${fix17.count} instance(s)]`);
+
+      // Apply Fix 15: Remove blank third page
+      const fix15 = removeEmptyThirdPage(currentHtml);
+      currentHtml = fix15.html;
+      if (fix15.applied) appliedFixes.push(`Removed blank third page or trailing elements [${fix15.count} instance(s)]`);
+      
+      // Apply Fix 16: Add global print styles
+      const fix16 = addGlobalPrintStyles(currentHtml);
+      currentHtml = fix16.html;
+      if (fix16.applied) appliedFixes.push(`Added global print styles for margin control`);
       
       
       return {
