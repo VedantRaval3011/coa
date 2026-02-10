@@ -455,59 +455,7 @@ function replaceAddress(html: string, address1?: string, address2?: string): { h
     return { html: modified, applied: count > 0, count };
   }
 
-  /**
-   * Fix 10b: Replace Generic Name
-   * Similar to Product Name, finds the Generic Name field and updates it across all pages
-   */
-  function replaceGenericName(html: string, genericName?: string): { html: string; applied: boolean; count: number } {
-    if (!genericName) return { html, applied: false, count: 0 };
-    
-    let modified = html;
-    let count = 0;
-    
-    // 1. Find the "Generic Name" label to determine the Top position
-    const labelMatch = modified.match(/<span[^>]*top:([\d.]+)pt[^>]*>\s*Generic\s*Name\s*<\/span>/i);
-    if (!labelMatch) {
-        return { html, applied: false, count: 0 };
-    }
-    
-    const labelTop = parseFloat(labelMatch[1]);
-    let originalValue = '';
 
-    // 2. Identify the original generic name value on Page 1
-    // Scan for all spans at left:108pt using a flexible regex for attributes
-    // Matches standard Oracle Reports format: style="..." ... >
-    const potentialValues = Array.from(modified.matchAll(/<span style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi));
-    
-    for (const match of potentialValues) {
-        const valTop = parseFloat(match[1]);
-        // Check vertical alignment (within 5pt tolerance)
-        if (Math.abs(valTop - labelTop) <= 5) {
-            originalValue = match[2].trim();
-            break;
-        }
-    }
-    
-    if (!originalValue) return { html, applied: false, count: 0 };
-
-    // 3. Replace all instances of that original value in the Generic Name column (left:108pt)
-    // Relaxed pattern: matches left:108pt and captures the rest of the tag until >
-    // We handle the closing tag flexibly too
-    const pattern = /(<span style="position:absolute;top:[\d.]+pt;left:108pt"[^>]*>)([^<]+)(<\/span>)/gi;
-
-    modified = modified.replace(pattern, (match, openTag, text, closeTag) => {
-        const trimmedText = text.trim();
-        // Replace if it matches the original Generic Name found on Page 1
-        // We also check if it contains the original value (in case of trailing spaces inside the match)
-        if (trimmedText === originalValue) {
-            count++;
-            return `${openTag}${genericName}${closeTag}`;
-        }
-        return match;
-    });
-
-    return { html: modified, applied: count > 0, count };
-  }
 
   /**
  * Fix 14: Replace/Add Remarks
@@ -828,17 +776,40 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
     if (genericNameLabelMatch) {
         const labelTop = parseFloat(genericNameLabelMatch[1]);
         
-        // 2. Find closest value at left:108pt
-        // We scan for all spans at left:108pt and find the one closest vertically to the label
-        const potentialValues = html.matchAll(/<span style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi);
+        // 2. Find ALL value lines at left:108pt
+        // Oracle Reports uses both <span> and <div> for Generic Name values
+        // We scan for both element types at left:108pt
+        const potentialValues = Array.from(html.matchAll(/<(?:span|div) style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi));
+        
+        const lines: { top: number, text: string }[] = [];
+        
+        // Find the first line
+        let currentTop = -1;
         
         for (const match of potentialValues) {
             const valTop = parseFloat(match[1]);
-            // Check vertical alignment (within 5pt tolerance to account for different fonts/alignments)
-            if (Math.abs(valTop - labelTop) <= 5) {
-                genericName = match[2].trim();
-                break;
+            // Check vertical alignment for first line (within 5pt tolerance)
+            if (currentTop === -1) {
+                if (Math.abs(valTop - labelTop) <= 5) {
+                    currentTop = valTop;
+                    lines.push({ top: valTop, text: match[2] });
+                }
+            } else {
+                // Look for subsequent lines
+                // They should be below the previous line (e.g., within 10-15pt)
+                // We assume line height is around 10-15pt
+                if (valTop > currentTop && valTop < currentTop + 20) {
+                    currentTop = valTop;
+                    lines.push({ top: valTop, text: match[2] });
+                } else if (valTop > currentTop + 20) {
+                    // Too far down, stop looking
+                    break;
+                }
             }
+        }
+        
+        if (lines.length > 0) {
+            genericName = lines.map(l => l.text.trim()).join(' ');
         }
     }
 
@@ -865,9 +836,6 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
             // Find spans on same line, to the right
             const potentialValues = Array.from(html.matchAll(/<span style="position:absolute;top:([\d.]+)pt;left:([\d.]+)pt"[^>]*>([^<]*)<\/span>/gi));
             
-            let bestCandidate = '';
-            let minDist = 9999;
-            
             for (const match of potentialValues) {
                 const valTop = parseFloat(match[1]);
                 const valLeft = parseFloat(match[2]);
@@ -878,14 +846,9 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
                     // Ignore the colon span if it exists separately
                     if (content === ':' || content === '') {
                          // If it's a colon, skip
-                         // If it's empty, it MIGHT be the value placeholder, keep it as candidate if we don't find text
                     }
                     
                     // We prefer spans with text
-                    // The value span is usually the one with id=f2 (data) vs f4 (headers), but we can't search by ID easily without parsing attributes accurately
-                    // Heuristic: The value is strictly to the right of the colon. Colon is usually at +40pt from Remarks.
-                    // Remarks @ 16pt. Colon @ 56pt. Value @ 63pt.
-                    
                     if (content !== ':' && valLeft > labelLeft + 10) {
                          // If we find text, take it
                          if (content.length > 0) {
@@ -899,6 +862,134 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
     }
 
     return { address1, address2, productName, genericName, remarks };
+  }
+
+  /**
+   * Fix 10b: Replace Generic Name
+   * Similar to Product Name, finds the Generic Name field and updates it across all pages
+   * Updated to handle multi-line generic names with word wrapping
+   */
+  function replaceGenericName(html: string, genericName?: string): { html: string; applied: boolean; count: number } {
+    if (!genericName) return { html, applied: false, count: 0 };
+    
+    let modified = html;
+    let count = 0;
+    
+    // 1. Find the "Generic Name" label to determine the Top position
+    const labelMatch = modified.match(/<span[^>]*top:([\d.]+)pt[^>]*>\s*Generic\s*Name\s*<\/span>/i);
+    if (!labelMatch) {
+        return { html, applied: false, count: 0 };
+    }
+    
+    const labelTop = parseFloat(labelMatch[1]);
+    
+    // 2. Identify the original lines on Page 1
+    // Oracle Reports uses both <span> and <div> for Generic Name values
+    const potentialValues = Array.from(modified.matchAll(/<(?:span|div) style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi));
+    
+    const originalLines: { top: number, text: string }[] = [];
+    let currentTop = -1;
+    
+    for (const match of potentialValues) {
+        const valTop = parseFloat(match[1]);
+        const text = match[2]; // keep original including spaces for exact matching
+        
+        if (currentTop === -1) {
+            if (Math.abs(valTop - labelTop) <= 5) {
+                currentTop = valTop;
+                originalLines.push({ top: valTop, text: text });
+            }
+        } else {
+             // Look for subsequent lines typically spaced 10-15pt apart
+            if (valTop > currentTop && valTop < currentTop + 20) {
+                currentTop = valTop;
+                originalLines.push({ top: valTop, text: text });
+            } else if (valTop > currentTop + 20) {
+                break;
+            }
+        }
+    }
+    
+    if (originalLines.length === 0) return { html, applied: false, count: 0 };
+
+    // 3. Word-wrap the new generic name across the same number of lines
+    // Use the longest original line length as the max chars per line
+    const maxCharsPerLine = Math.max(...originalLines.map(l => l.text.trim().length));
+    const newLines = wordWrapText(genericName, maxCharsPerLine, originalLines.length);
+
+    // 4. Build a map: original trimmed text -> replacement text
+    // First line gets newLines[0], second line gets newLines[1], etc.
+    const replacementMap = new Map<string, string>();
+    for (let i = 0; i < originalLines.length; i++) {
+        const origTrimmed = originalLines[i].text.trim();
+        const replacement = i < newLines.length ? newLines[i] : '';
+        replacementMap.set(origTrimmed, replacement);
+    }
+    
+    // 5. Relaxed pattern to find both spans and divs at left:108pt
+    const pattern = /(<(?:span|div) style="position:absolute;top:[\d.]+pt;left:108pt"[^>]*>)([^<]+)(<\/(?:span|div)>)/gi;
+
+    modified = modified.replace(pattern, (match, openTag, text, closeTag) => {
+        const trimmedText = text.trim();
+        
+        if (replacementMap.has(trimmedText)) {
+            const replacement = replacementMap.get(trimmedText)!;
+            count++;
+            return `${openTag}${replacement}${closeTag}`;
+        }
+        
+        return match;
+    });
+
+    return { html: modified, applied: count > 0, count };
+  }
+
+  /**
+   * Helper: Word-wrap text into N lines, each with at most maxChars characters.
+   * Splits at word boundaries. If maxLines is 1, returns the full text.
+   */
+  function wordWrapText(text: string, maxChars: number, maxLines: number): string[] {
+    if (maxLines <= 1 || text.length <= maxChars) {
+        return [text];
+    }
+    
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let currentLine = '';
+    
+    for (const word of words) {
+        if (currentLine.length === 0) {
+            currentLine = word;
+        } else if (currentLine.length + 1 + word.length <= maxChars) {
+            currentLine += ' ' + word;
+        } else {
+            lines.push(currentLine);
+            currentLine = word;
+            if (lines.length >= maxLines - 1) {
+                // Put everything remaining in the last line
+                break;
+            }
+        }
+    }
+    
+    // Add remaining words to current line
+    if (currentLine.length > 0) {
+        const remainingIdx = words.indexOf(currentLine.split(' ')[0]);
+        if (lines.length >= maxLines - 1 && remainingIdx >= 0) {
+            // Gather all remaining words from where we left off
+            const lastLineWords = words.slice(lines.reduce((acc, l) => acc + l.split(/\s+/).length, 0));
+            lines.push(lastLineWords.join(' '));
+        } else {
+            lines.push(currentLine);
+        }
+    }
+    
+    // Pad with empty strings if fewer lines than maxLines
+    while (lines.length < maxLines) {
+        lines.push('');
+    }
+    
+    return lines;
   }
 
   /**
