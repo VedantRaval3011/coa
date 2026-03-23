@@ -751,6 +751,72 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
   }
 
   /**
+   * First label row below "Generic Name" in the left column (Product Code, Batch No., etc.).
+   * Values at left:108pt must stay above this row so we do not merge the next fields into generic name.
+   */
+  function getGenericNameValueTopCeiling(html: string, genericLabelTop: number): number | undefined {
+    const maxScanTop = genericLabelTop + 200;
+    let minNext = Infinity;
+    const labelPatterns = [
+      /<(?:span|div)[^>]*top:\s*([\d.]+)pt[^>]*>\s*Product\s*Code\b/gi,
+      /<(?:span|div)[^>]*top:\s*([\d.]+)pt[^>]*>\s*Batch\s*No\.?\b/gi,
+    ];
+    for (const re of labelPatterns) {
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(html)) !== null) {
+        const t = parseFloat(m[1]);
+        if (t > genericLabelTop + 0.5 && t < maxScanTop) {
+          minNext = Math.min(minNext, t);
+        }
+      }
+    }
+    if (minNext === Infinity) return undefined;
+    return minNext - 0.75;
+  }
+
+  /**
+   * Collect positioned value fragments for Generic Name at left:108pt, bounded by the next field row.
+   */
+  function collectGenericNameValueLines(
+    html: string,
+    labelTop: number,
+    valueTopCeiling?: number
+  ): { top: number; text: string }[] {
+    const raw = Array.from(
+      html.matchAll(/<(?:span|div) style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi)
+    ).map((m) => ({ top: parseFloat(m[1]), text: m[2] }));
+
+    raw.sort((a, b) => a.top - b.top);
+
+    const lines: { top: number; text: string }[] = [];
+    let currentTop = -1;
+    const maxContinuationGap = 16;
+
+    for (const { top: valTop, text } of raw) {
+      if (valueTopCeiling !== undefined && valTop >= valueTopCeiling) {
+        break;
+      }
+
+      if (currentTop === -1) {
+        if (Math.abs(valTop - labelTop) <= 5) {
+          currentTop = valTop;
+          lines.push({ top: valTop, text });
+        }
+      } else {
+        if (valTop > currentTop && valTop < currentTop + maxContinuationGap) {
+          currentTop = valTop;
+          lines.push({ top: valTop, text });
+        } else if (valTop > currentTop + maxContinuationGap) {
+          break;
+        }
+      }
+    }
+
+    return lines;
+  }
+
+  /**
    * Extract current values from the HTML to populate default customization options
    */
   export function extractCurrentValues(html: string) {
@@ -775,41 +841,10 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
     
     if (genericNameLabelMatch) {
         const labelTop = parseFloat(genericNameLabelMatch[1]);
-        
-        // 2. Find ALL value lines at left:108pt
-        // Oracle Reports uses both <span> and <div> for Generic Name values
-        // We scan for both element types at left:108pt
-        const potentialValues = Array.from(html.matchAll(/<(?:span|div) style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi));
-        
-        const lines: { top: number, text: string }[] = [];
-        
-        // Find the first line
-        let currentTop = -1;
-        
-        for (const match of potentialValues) {
-            const valTop = parseFloat(match[1]);
-            // Check vertical alignment for first line (within 5pt tolerance)
-            if (currentTop === -1) {
-                if (Math.abs(valTop - labelTop) <= 5) {
-                    currentTop = valTop;
-                    lines.push({ top: valTop, text: match[2] });
-                }
-            } else {
-                // Look for subsequent lines
-                // They should be below the previous line (e.g., within 10-15pt)
-                // We assume line height is around 10-15pt
-                if (valTop > currentTop && valTop < currentTop + 20) {
-                    currentTop = valTop;
-                    lines.push({ top: valTop, text: match[2] });
-                } else if (valTop > currentTop + 20) {
-                    // Too far down, stop looking
-                    break;
-                }
-            }
-        }
-        
+        const valueCeiling = getGenericNameValueTopCeiling(html, labelTop);
+        const lines = collectGenericNameValueLines(html, labelTop, valueCeiling);
         if (lines.length > 0) {
-            genericName = lines.map(l => l.text.trim()).join(' ');
+            genericName = lines.map((l) => l.text.trim()).join(' ');
         }
     }
 
@@ -882,34 +917,9 @@ function replaceRemarks(html: string, remarks?: string): { html: string; applied
     }
     
     const labelTop = parseFloat(labelMatch[1]);
-    
-    // 2. Identify the original lines on Page 1
-    // Oracle Reports uses both <span> and <div> for Generic Name values
-    const potentialValues = Array.from(modified.matchAll(/<(?:span|div) style="position:absolute;top:([\d.]+)pt;left:108pt"[^>]*>([^<]+)/gi));
-    
-    const originalLines: { top: number, text: string }[] = [];
-    let currentTop = -1;
-    
-    for (const match of potentialValues) {
-        const valTop = parseFloat(match[1]);
-        const text = match[2]; // keep original including spaces for exact matching
-        
-        if (currentTop === -1) {
-            if (Math.abs(valTop - labelTop) <= 5) {
-                currentTop = valTop;
-                originalLines.push({ top: valTop, text: text });
-            }
-        } else {
-             // Look for subsequent lines typically spaced 10-15pt apart
-            if (valTop > currentTop && valTop < currentTop + 20) {
-                currentTop = valTop;
-                originalLines.push({ top: valTop, text: text });
-            } else if (valTop > currentTop + 20) {
-                break;
-            }
-        }
-    }
-    
+    const valueCeiling = getGenericNameValueTopCeiling(modified, labelTop);
+    const originalLines = collectGenericNameValueLines(modified, labelTop, valueCeiling);
+
     if (originalLines.length === 0) return { html, applied: false, count: 0 };
 
     // 3. Word-wrap the new generic name across the same number of lines
